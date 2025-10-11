@@ -10,6 +10,9 @@
 /output*/
 /converted_output*/
 
+# Log Directories and files
+/logs_*
+
 # Go specific
 *.test
 *.out

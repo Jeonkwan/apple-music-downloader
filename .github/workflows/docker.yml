@@ -71,10 +71,16 @@ jobs:
           
       - name: Prepare build context
         run: |
-          mkdir -p build_context
+          mkdir -p build_context/amd64 build_context/arm64
           cp Dockerfile.release build_context/Dockerfile
           cp -r artifacts/binary-linux-amd64/* build_context/amd64/
           cp -r artifacts/binary-linux-arm64/* build_context/arm64/
+          
+          # Debug: List the contents
+          echo "Content of artifacts directory:"
+          ls -R artifacts/
+          echo "Content of build_context directory:"
+          ls -R build_context/
           
       - name: Build and push
         uses: docker/build-push-action@v5
