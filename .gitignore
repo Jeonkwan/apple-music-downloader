@@ -1,10 +1,36 @@
-*
-!.gitignore
-!agent.js
-!agent-arm64.js
-!go.mod
-!go.sum
-!main.go
-!README.md
-!utils/*
-!Dockerfile
+# Binaries and build artifacts
+/main
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build directories
+/build_output/
+/output*/
+/converted_output*/
+
+# Go specific
+*.test
+*.out
+/vendor/
+
+# IDE specific
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS specific
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project specific
+/output_alac/
+/output_aac/
+/output_atmos/
