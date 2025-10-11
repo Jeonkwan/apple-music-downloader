@@ -1,13 +1,11 @@
-name: Go
+name: Go Release
 
 on:
   push:
-    branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
+    tags:
+      - 'v*'
 
 jobs:
-
   build-windows:
     runs-on: windows-latest
     steps:
@@ -17,21 +15,22 @@ jobs:
       with:
         go-version: '1.23.1'
     - name: Build
+      run: go build -o main.exe -v ./main.go
+    - name: Package artifact
+      shell: pwsh
       run: |
-        go build -o main.exe -v ./main.go
-    - name: Create a new directory and copy files
-      run: |
-        mkdir -p alac
+        mkdir alac
         cp agent.js alac/
         cp agent-arm64.js alac/
         cp config.yaml alac/
         cp README.md alac/
         cp main.exe alac/
-    - name: Upload apple-music-alac-atmos-downloader
+        Compress-Archive -Path alac/* -DestinationPath apple-music-downloader_windows-x86_64.zip
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: apple-music-alac-atmos-downloader-windows
-        path: alac/*
+        name: apple-music-downloader_windows-x86_64
+        path: apple-music-downloader_windows-x86_64.zip
 
   build-linux:
     runs-on: ubuntu-latest
@@ -42,23 +41,23 @@ jobs:
       with:
         go-version: '1.23.1'
     - name: Build
+      run: go build -o main -v ./main.go
+    - name: Package artifact
       run: |
-        go build -o main -v ./main.go
-    - name: Create a new directory and copy files
-      run: |
-        mkdir -p alac
+        mkdir alac
         cp agent.js alac/
         cp agent-arm64.js alac/
         cp config.yaml alac/
         cp README.md alac/
         cp main alac/
-    - name: Upload apple-music-alac-atmos-downloader
+        zip -r apple-music-downloader_linux-x86_64.zip alac
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: apple-music-alac-atmos-downloader-linux
-        path: alac/*
+        name: apple-music-downloader_linux-x86_64
+        path: apple-music-downloader_linux-x86_64.zip
 
-  build-macos:
+  build-macos-apple-silicon:
     runs-on: macos-latest
     steps:
     - uses: actions/checkout@v4
@@ -67,18 +66,59 @@ jobs:
       with:
         go-version: '1.23.1'
     - name: Build
+      run: go build -o main -v ./main.go
+    - name: Package artifact
       run: |
-        go build -o main -v ./main.go
-    - name: Create a new directory and copy files
-      run: |
-        mkdir -p alac
+        mkdir alac
         cp agent.js alac/
         cp agent-arm64.js alac/
         cp config.yaml alac/
         cp README.md alac/
         cp main alac/
-    - name: Upload apple-music-alac-atmos-downloader
+        zip -r apple-music-downloader_macos-apple-silicon.zip alac
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: apple-music-alac-atmos-downloader-macos
-        path: alac/*
+        name: apple-music-downloader_macos-apple-silicon
+        path: apple-music-downloader_macos-apple-silicon.zip
+
+  build-macos-intel:
+    runs-on: macos-15-intel
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.23.1'
+    - name: Build
+      run: go build -o main -v ./main.go
+    - name: Package artifact
+      run: |
+        mkdir alac
+        cp agent.js alac/
+        cp agent-arm64.js alac/
+        cp config.yaml alac/
+        cp README.md alac/
+        cp main alac/
+        zip -r apple-music-downloader_macos-intel-x86_64.zip alac
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: apple-music-downloader_macos-intel-x86_64
+        path: apple-music-downloader_macos-intel-x86_64.zip
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [build-windows, build-linux, build-macos-apple-silicon, build-macos-intel]
+    permissions:
+      contents: write
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: artifacts
+    - name: Create Release and Upload Assets
+      uses: softprops/action-gh-release@v2
+      with:
+        files: artifacts/*/*.zip
+        draft: true
