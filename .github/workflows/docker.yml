@@ -2,61 +2,18 @@ name: Build and Push Container Images
 
 on:
   push:
+    branches:
+      - 'main'
+      - 'master'
     tags:
       - 'v*'
 
 jobs:
-  build-binaries:
-    strategy:
-      matrix:
-        platform: [linux-amd64, linux-arm64]
-        include:
-          - platform: linux-amd64
-            os: ubuntu-latest
-            goarch: amd64
-          - platform: linux-arm64
-            os: ubuntu-latest
-            goarch: arm64
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.23.1'
-      
-      - name: Build binary
-        env:
-          GOOS: linux
-          GOARCH: ${{ matrix.goarch }}
-        run: |
-          go build -o build_output/main -v ./main.go
-          
-      - name: Package build files
-        run: |
-          cp agent.js build_output/
-          cp agent-arm64.js build_output/
-          cp config.yaml build_output/
-          cp README.md build_output/
-      
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: binary-${{ matrix.platform }}
-          path: build_output/
-
   build-and-push-images:
-    needs: build-binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         
@@ -69,27 +26,24 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           
-      - name: Prepare build context
+      - name: Extract version
+        id: version
         run: |
-          mkdir -p build_context/amd64 build_context/arm64
-          cp Dockerfile.release build_context/Dockerfile
-          cp -r artifacts/binary-linux-amd64/* build_context/amd64/
-          cp -r artifacts/binary-linux-arm64/* build_context/arm64/
-          
-          # Debug: List the contents
-          echo "Content of artifacts directory:"
-          ls -R artifacts/
-          echo "Content of build_context directory:"
-          ls -R build_context/
-          
+          if [[ $GITHUB_REF == refs/tags/* ]]; then
+            # For tags, use the tag name
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            # For branches, use 'latest' and short SHA
+            echo "version=sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+          fi
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
-          context: build_context
+          context: .
+          file: ./Dockerfile.release
           platforms: linux/amd64,linux/arm64
-          build-args: |
-            TARGETARCH=amd64
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/apple-music-downloader:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/apple-music-downloader:${{ github.ref_name }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/apple-music-downloader:${{ steps.version.outputs.version }}
