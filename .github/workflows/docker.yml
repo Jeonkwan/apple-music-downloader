@@ -87,6 +87,8 @@ jobs:
         with:
           context: build_context
           platforms: linux/amd64,linux/arm64
+          build-args: |
+            TARGETARCH=amd64
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/apple-music-downloader:latest

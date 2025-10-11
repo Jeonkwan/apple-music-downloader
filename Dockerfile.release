@@ -13,12 +13,13 @@ RUN apt-get update && apt-get install -y \
 # Create and set working directory
 WORKDIR /app
 
-# Copy only the necessary files
-COPY build_output/main /app/main
-COPY build_output/agent.js /app/agent.js
-COPY build_output/agent-arm64.js /app/agent-arm64.js
-COPY build_output/config.yaml /app/config.yaml
-COPY build_output/README.md /app/README.md
+# Copy architecture-specific files
+ARG TARGETARCH
+COPY ${TARGETARCH}/main /app/main
+COPY ${TARGETARCH}/agent.js /app/agent.js
+COPY ${TARGETARCH}/agent-arm64.js /app/agent-arm64.js
+COPY ${TARGETARCH}/config.yaml /app/config.yaml
+COPY ${TARGETARCH}/README.md /app/README.md
 
 # Create necessary directories
 RUN mkdir -p /app/output_alac \
