@@ -19,13 +19,13 @@ jobs:
     - name: Package artifact
       shell: pwsh
       run: |
-        mkdir alac
-        cp agent.js alac/
-        cp agent-arm64.js alac/
-        cp config.yaml alac/
-        cp README.md alac/
-        cp main.exe alac/
-        Compress-Archive -Path alac/* -DestinationPath apple-music-downloader_windows-x86_64.zip
+        mkdir build_output
+        cp agent.js build_output/
+        cp agent-arm64.js build_output/
+        cp config.yaml build_output/
+        cp README.md build_output/
+        cp main.exe build_output/
+        Compress-Archive -Path build_output/* -DestinationPath apple-music-downloader_windows-x86_64.zip
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
@@ -44,13 +44,13 @@ jobs:
       run: go build -o main -v ./main.go
     - name: Package artifact
       run: |
-        mkdir alac
-        cp agent.js alac/
-        cp agent-arm64.js alac/
-        cp config.yaml alac/
-        cp README.md alac/
-        cp main alac/
-        zip -r apple-music-downloader_linux-x86_64.zip alac
+        mkdir build_output
+        cp agent.js build_output/
+        cp agent-arm64.js build_output/
+        cp config.yaml build_output/
+        cp README.md build_output/
+        cp main build_output/
+        zip -j apple-music-downloader_linux-x86_64.zip build_output/*
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
@@ -69,13 +69,13 @@ jobs:
       run: go build -o main -v ./main.go
     - name: Package artifact
       run: |
-        mkdir alac
-        cp agent.js alac/
-        cp agent-arm64.js alac/
-        cp config.yaml alac/
-        cp README.md alac/
-        cp main alac/
-        zip -r apple-music-downloader_macos-apple-silicon.zip alac
+        mkdir build_output
+        cp agent.js build_output/
+        cp agent-arm64.js build_output/
+        cp config.yaml build_output/
+        cp README.md build_output/
+        cp main build_output/
+        zip -j apple-music-downloader_macos-apple-silicon.zip build_output/*
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
@@ -94,13 +94,13 @@ jobs:
       run: go build -o main -v ./main.go
     - name: Package artifact
       run: |
-        mkdir alac
-        cp agent.js alac/
-        cp agent-arm64.js alac/
-        cp config.yaml alac/
-        cp README.md alac/
-        cp main alac/
-        zip -r apple-music-downloader_macos-intel-x86_64.zip alac
+        mkdir build_output
+        cp agent.js build_output/
+        cp agent-arm64.js build_output/
+        cp config.yaml build_output/
+        cp README.md build_output/
+        cp main build_output/
+        zip -j apple-music-downloader_macos-intel-x86_64.zip build_output/*
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
