@@ -32,6 +32,7 @@ import (
 	"github.com/grafov/m3u8"
 	"github.com/olekukonko/tablewriter"
 	"github.com/spf13/pflag"
+
 	"github.com/zhaarey/go-mp4tag"
 	"gopkg.in/yaml.v2"
 )
@@ -44,6 +45,7 @@ var (
 	dl_song        bool
 	artist_select  bool
 	debug_mode     bool
+	print_json     bool
 	alac_max       *int
 	atmos_max      *int
 	mv_max         *int
@@ -52,7 +54,16 @@ var (
 	Config         structs.ConfigSet
 	counter        structs.Counter
 	okDict         = make(map[string][]int)
+	AddedTracks    []AddedTrack
 )
+
+type AddedTrack struct {
+	Path     string `json:"path"`
+	Artist   string `json:"artist"`
+	ArtistID string `json:"artist_id"`
+	Album    string `json:"album"`
+	Song     string `json:"song"`
+}
 
 func loadConfig() error {
 	data, err := os.ReadFile("config.yaml")
@@ -650,31 +661,25 @@ func isLossySource(ext string, codec string) bool {
 
 // CONVERSION FEATURE: Build ffmpeg arguments for desired target.
 func buildFFmpegArgs(ffmpegPath, inPath, outPath, targetFmt, extraArgs string) ([]string, error) {
-	// Base arguments: -y (overwrite), -i (input)
-	args := []string{"-y", "-i", inPath}
-
-	// Map all streams and metadata by default
-	args = append(args, "-map", "0", "-map_metadata", "0")
-
+	args := []string{"-y", "-i", inPath, "-loglevel", "error", "-map_metadata"}
+	if Config.ConvertWithMetadata {
+		args = append(args, "0")
+	} else {
+		args = append(args, "-1")
+	}
 	switch targetFmt {
 	case "flac":
-		// For FLAC, we need to strip video streams as FLAC doesn't support them
-		args = append(args, "-vn", "-c:a", "flac")
+		args = append(args, "-c:a", "flac")
 	case "mp3":
-		// Keep album art for MP3, convert other video streams if any
-		args = append(args, "-c:v", "mjpeg", "-c:a", "libmp3lame", "-qscale:a", "2")
+		// VBR quality 2 ~ high quality
+		args = append(args, "-c:a", "libmp3lame", "-qscale:a", "2")
 	case "opus":
-		// Opus in Ogg container, keep album art
-		args = append(args, "-c:v", "mjpeg", "-c:a", "libopus", "-b:a", "192k", "-vbr", "on")
+		// Medium/high quality
+		args = append(args, "-c:a", "libopus", "-b:a", "192k", "-vbr", "on")
 	case "wav":
-		// WAV doesn't support embedded images
-		args = append(args, "-vn", "-c:a", "pcm_s16le")
-	case "alacipod":
-		// Apple Lossless optimized for iPod/iOS (44.1kHz)
-		// Keep album art and convert to compatible format if needed
-		args = append(args, "-c:v", "mjpeg", "-c:a", "alac", "-ar", "44100")
+		args = append(args, "-c:a", "pcm_s16le")
 	case "copy":
-		// Just container copy - copy everything as is
+		// Just container copy (probably pointless for same container)
 		args = append(args, "-c", "copy")
 	default:
 		return nil, fmt.Errorf("unsupported convert-format: %s", targetFmt)
@@ -702,71 +707,31 @@ func convertIfNeeded(track *task.Track) {
 	ext := strings.ToLower(filepath.Ext(srcPath))
 	targetFmt := strings.ToLower(Config.ConvertFormat)
 
-	// Determine output extension based on format
-	var outExt string
-	switch targetFmt {
-	case "alacipod":
-		outExt = ".m4a" // ALAC must use .m4a extension
-	case "copy":
+	// Map extension for output
+	if targetFmt == "copy" {
 		fmt.Println("Convert (copy) requested; skipping because it produces no new format.")
-		return
-	default:
-		outExt = "." + targetFmt
-	}
-
-	// Helper function to check audio format and sample rate
-	checkAudioParams := func(path string) (isAlac bool, sampleRate int, err error) {
-		cmd := exec.Command(Config.FFmpegPath, "-i", path)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		cmd.Run() // We expect this to "fail" as -i just gets info
-		output := stderr.String()
-
-		isAlac = strings.Contains(output, "alac")
-
-		// Extract sample rate using regex
-		re := regexp.MustCompile(`(\d+) Hz`)
-		if matches := re.FindStringSubmatch(output); len(matches) > 1 {
-			sampleRate, _ = strconv.Atoi(matches[1])
-		}
-
 		return
 	}
 
 	if Config.ConvertSkipIfSourceMatch {
-		if targetFmt == "alacipod" && ext == ".m4a" {
-			// For alacipod, check both format and sample rate
-			isAlac, sampleRate, err := checkAudioParams(srcPath)
-			if err == nil && isAlac && sampleRate == 44100 {
-				fmt.Printf("Source is already ALAC at 44.1kHz, skipping conversion.\n")
-				return
-			}
-		} else if ext == "."+targetFmt {
+		if ext == "."+targetFmt {
 			fmt.Printf("Conversion skipped (already %s)\n", targetFmt)
 			return
 		}
 	}
 
-	// Create output path in converted directory
-	relPath, err := filepath.Rel(Config.AlacSaveFolder, srcPath)
-	if err != nil {
-		fmt.Printf("Failed to get relative path: %v\n", err)
-		return
-	}
+	outBase := strings.TrimSuffix(srcPath, ext)
+	outPath := outBase + "." + targetFmt
 
-	convertedBaseDir := filepath.Join(filepath.Dir(Config.AlacSaveFolder), "converted_"+filepath.Base(Config.AlacSaveFolder))
-	outPath := filepath.Join(convertedBaseDir, strings.TrimSuffix(relPath, ext)+outExt)
-
-	// Ensure output directory exists
-	if err := os.MkdirAll(filepath.Dir(outPath), 0755); err != nil {
-		fmt.Printf("Failed to create output directory: %v\n", err)
-		return
-	}
-
-	// Warn about lossy -> lossless
-	if Config.ConvertWarnLossyToLossless && (targetFmt == "flac" || targetFmt == "wav") &&
-		isLossySource(ext, track.Codec) {
-		fmt.Println("Warning: Converting lossy source to lossless container will not improve quality.")
+	// Handle lossy -> lossless cases: optionally skip or warn
+	if (targetFmt == "flac" || targetFmt == "wav") && isLossySource(ext, track.Codec) {
+		if Config.ConvertSkipLossyToLossless {
+			fmt.Println("Skipping conversion: source appears lossy and target is lossless; configured to skip.")
+			return
+		}
+		if Config.ConvertWarnLossyToLossless {
+			fmt.Println("Warning: Converting lossy source to lossless container will not improve quality.")
+		}
 	}
 
 	if _, err := exec.LookPath(Config.FFmpegPath); err != nil {
@@ -782,47 +747,52 @@ func convertIfNeeded(track *task.Track) {
 
 	fmt.Printf("Converting -> %s ...\n", targetFmt)
 	cmd := exec.Command(Config.FFmpegPath, args...)
-
-	// Debug: Print the full command
-	fmt.Printf("FFmpeg command: %s %s\n", Config.FFmpegPath, strings.Join(args, " "))
-
 	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	if Config.ConvertCheckBadALAC {
+		cmd.Stderr = &stderr
+	} else {
+		cmd.Stderr = nil
+	}
+	cmd.Stdout = nil
 	start := time.Now()
 	if err := cmd.Run(); err != nil {
-		fmt.Printf("Conversion failed: %v\nFFmpeg error output:\n%s\n", err, stderr.String())
+		fmt.Println("Conversion failed:", err)
+		// leave original
 		return
 	}
-
-	fmt.Printf("Conversion completed in %s: %s\n", time.Since(start).Truncate(time.Millisecond), filepath.Base(outPath))
-
-	// Copy cover art if it exists
-	coverFiles := []string{"cover.jpg", "cover.png"}
-	for _, coverName := range coverFiles {
-		srcCover := filepath.Join(filepath.Dir(srcPath), coverName)
-		if _, err := os.Stat(srcCover); err == nil {
-			dstCover := filepath.Join(filepath.Dir(outPath), coverName)
-			if err := copyFile(srcCover, dstCover); err != nil {
-				fmt.Printf("Warning: Failed to copy cover art: %v\n", err)
+	if Config.ConvertCheckBadALAC && stderr.Len() > 0 {
+		fmt.Print("Detected ALAC Error.", "\n")
+		if Config.ConvertDeleteBadALAC {
+			delPath := strings.TrimSuffix(srcPath, "m4a") + targetFmt
+			logPath := strings.TrimSuffix(srcPath, "m4a") + "log"
+			if err := os.Remove(delPath); err != nil {
+				fmt.Println("Failed to remove convert:", err)
 			} else {
-				fmt.Printf("Copied cover art: %s\n", coverName)
+				fmt.Println("Convert removed due to the bad ALAC.")
+				log := stderr
+				err = os.WriteFile(logPath, log.Bytes(), 0644)
+				if err != nil {
+					fmt.Println("Convert logs:", log)
+				} else {
+					fmt.Println("Convert logs are stored in:", logPath)
+				}
 			}
-			break // Found and copied one cover file, no need to check others
 		}
+	} else {
+		fmt.Printf("Conversion completed in %s: %s\n", time.Since(start).Truncate(time.Millisecond), filepath.Base(outPath))
+
+		if !Config.ConvertKeepOriginal {
+			if err := os.Remove(srcPath); err != nil {
+				fmt.Println("Failed to remove original after conversion:", err)
+			} else {
+				fmt.Println("Original removed.")
+			}
+
+		}
+		track.SavePath = outPath
+		track.SaveName = filepath.Base(outPath)
 	}
 
-	// Update track to point to converted file
-	track.SavePath = outPath
-	track.SaveName = filepath.Base(outPath)
-
-	// Remove original if not keeping it
-	if !Config.ConvertKeepOriginal {
-		if err := os.Remove(srcPath); err != nil {
-			fmt.Println("Failed to remove original after conversion:", err)
-		} else {
-			fmt.Println("Original removed.")
-		}
-	}
 }
 
 func ripTrack(track *task.Track, token string, mediaUserToken string) {
@@ -946,7 +916,6 @@ func ripTrack(track *task.Track, token string, mediaUserToken string) {
 		convertedPath = strings.TrimSuffix(trackPath, filepath.Ext(trackPath)) + "." + strings.ToLower(Config.ConvertFormat)
 		considerConverted = true
 	}
-
 	//get lrc
 	var lrc string = ""
 	if Config.EmbedLrc || Config.SaveLrcFile {
@@ -975,6 +944,18 @@ func ripTrack(track *task.Track, token string, mediaUserToken string) {
 		fmt.Println("Track already exists locally.")
 		counter.Success++
 		okDict[track.PreID] = append(okDict[track.PreID], track.TaskNum)
+
+		tArtistId := ""
+		if len(track.Resp.Relationships.Artists.Data) > 0 {
+			tArtistId = track.Resp.Relationships.Artists.Data[0].ID
+		}
+		AddedTracks = append(AddedTracks, AddedTrack{
+			Path:     trackPath,
+			Artist:   track.Resp.Attributes.ArtistName,
+			ArtistID: tArtistId,
+			Album:    track.Resp.Attributes.AlbumName,
+			Song:     track.Resp.Attributes.Name,
+		})
 		return
 	}
 	if considerConverted {
@@ -983,6 +964,18 @@ func ripTrack(track *task.Track, token string, mediaUserToken string) {
 			fmt.Println("Converted track already exists locally.")
 			counter.Success++
 			okDict[track.PreID] = append(okDict[track.PreID], track.TaskNum)
+
+			tArtistId := ""
+			if len(track.Resp.Relationships.Artists.Data) > 0 {
+				tArtistId = track.Resp.Relationships.Artists.Data[0].ID
+			}
+			AddedTracks = append(AddedTracks, AddedTrack{
+				Path:     convertedPath,
+				Artist:   track.Resp.Attributes.ArtistName,
+				ArtistID: tArtistId,
+				Album:    track.Resp.Attributes.AlbumName,
+				Song:     track.Resp.Attributes.Name,
+			})
 			return
 		}
 	}
@@ -1018,9 +1011,10 @@ func ripTrack(track *task.Track, token string, mediaUserToken string) {
 			return
 		}
 	}
+	//这里利用MP4box将fmp4转化为mp4，并添加ilst box与cover，方便后面的mp4tag添加更多自定义标签
 	tags := []string{
 		"tool=",
-		fmt.Sprintf("artist=%s", track.Resp.Attributes.ArtistName),
+		"artist=AppleMusic",
 	}
 	if Config.EmbedCover {
 		if (strings.Contains(track.PreID, "pl.") || strings.Contains(track.PreID, "ra.")) && Config.DlAlbumcoverForPlaylist {
@@ -1055,6 +1049,18 @@ func ripTrack(track *task.Track, token string, mediaUserToken string) {
 
 	// CONVERSION FEATURE hook
 	convertIfNeeded(track)
+
+	tArtistId := ""
+	if len(track.Resp.Relationships.Artists.Data) > 0 {
+		tArtistId = track.Resp.Relationships.Artists.Data[0].ID
+	}
+	AddedTracks = append(AddedTracks, AddedTrack{
+		Path:     track.SavePath,
+		Artist:   track.Resp.Attributes.ArtistName,
+		ArtistID: tArtistId,
+		Album:    track.Resp.Attributes.AlbumName,
+		Song:     track.Resp.Attributes.Name,
+	})
 
 	counter.Success++
 	okDict[track.PreID] = append(okDict[track.PreID], track.TaskNum)
@@ -1179,6 +1185,13 @@ func ripStation(albumId string, token string, storefront string, mediaUserToken 
 			okDict[station.ID] = append(okDict[station.ID], 1)
 
 			fmt.Println("Radio already exists locally.")
+			AddedTracks = append(AddedTracks, AddedTrack{
+				Path:     trackPath,
+				Artist:   "Apple Music Station",
+				ArtistID: "",
+				Album:    station.Name,
+				Song:     station.Name,
+			})
 			return nil
 		}
 		assetsUrl, serverUrl, err := ampapi.GetStationAssetsUrlAndServerUrl(station.ID, mediaUserToken, token)
@@ -1214,6 +1227,13 @@ func ripStation(albumId string, token string, storefront string, mediaUserToken 
 		if err := cmd.Run(); err != nil {
 			fmt.Printf("Embed failed: %v\n", err)
 		}
+		AddedTracks = append(AddedTracks, AddedTrack{
+			Path:     trackPath,
+			Artist:   "Apple Music Station",
+			ArtistID: "",
+			Album:    station.Name,
+			Song:     station.Name,
+		})
 		counter.Success++
 		okDict[station.ID] = append(okDict[station.ID], 1)
 		return nil
@@ -1410,8 +1430,8 @@ func ripAlbum(albumId string, token string, storefront string, mediaUserToken st
 	os.MkdirAll(albumFolderPath, os.ModePerm)
 	album.SaveName = albumFolderName
 	fmt.Println(albumFolderName)
-	if Config.SaveArtistCover {
-		if len(meta.Data[0].Relationships.Artists.Data) > 0 {
+	if Config.SaveArtistCover && len(meta.Data[0].Relationships.Artists.Data) > 0 {
+		if meta.Data[0].Relationships.Artists.Data[0].Attributes.Artwork.Url != "" {
 			_, err = writeCover(singerFolder, "folder", meta.Data[0].Relationships.Artists.Data[0].Attributes.Artwork.Url)
 			if err != nil {
 				fmt.Println("Failed to write artist cover.")
@@ -1870,6 +1890,7 @@ func main() {
 	pflag.BoolVar(&dl_song, "song", false, "Enable single song download mode")
 	pflag.BoolVar(&artist_select, "all-album", false, "Download all artist albums")
 	pflag.BoolVar(&debug_mode, "debug", false, "Enable debug mode to show audio quality information")
+	pflag.BoolVar(&print_json, "json", false, "Output JSON summary at the end")
 	alac_max = pflag.Int("alac-max", Config.AlacMax, "Specify the max quality for download alac")
 	atmos_max = pflag.Int("atmos-max", Config.AtmosMax, "Specify the max quality for download atmos")
 	aac_type = pflag.String("aac-type", Config.AacType, "Select AAC type, aac aac-binaural aac-downmix")
@@ -1966,9 +1987,9 @@ func main() {
 					"{ArtistId}", "",
 				).Replace(Config.ArtistFolderFormat)
 				if mvSaveDir != "" {
-					mvSaveDir = filepath.Join(Config.AlacSaveFolder, forbiddenNames.ReplaceAllString(mvSaveDir, "_"))
+					mvSaveDir = filepath.Join(Config.MVSaveFolder, forbiddenNames.ReplaceAllString(mvSaveDir, "_"))
 				} else {
-					mvSaveDir = Config.AlacSaveFolder
+					mvSaveDir = Config.MVSaveFolder
 				}
 				storefront, albumId = checkUrlMv(urlRaw)
 				err := mvDownloader(albumId, mvSaveDir, token, storefront, Config.MediaUserToken, nil)
@@ -2037,6 +2058,16 @@ func main() {
 		fmt.Println("Start trying again...")
 		counter = structs.Counter{}
 	}
+
+	// Print JSON output
+	if print_json {
+		jsonOutput, err := json.Marshal(AddedTracks)
+		if err != nil {
+			fmt.Println("Error generating JSON output:", err)
+		} else {
+			fmt.Println(string(jsonOutput))
+		}
+	}
 }
 
 func mvDownloader(adamID string, saveDir string, token string, storefront string, mediaUserToken string, track *task.Track) error {
@@ -2065,6 +2096,22 @@ func mvDownloader(adamID string, saveDir string, token string, storefront string
 	exists, _ := fileExists(mvOutPath)
 	if exists {
 		fmt.Println("MV already exists locally.")
+
+		mvArtistName := MVInfo.Data[0].Attributes.ArtistName
+		mvAlbumName := MVInfo.Data[0].Attributes.AlbumName
+		mvName := MVInfo.Data[0].Attributes.Name
+		mvArtistId := ""
+		if len(MVInfo.Data[0].Relationships.Artists.Data) > 0 {
+			mvArtistId = MVInfo.Data[0].Relationships.Artists.Data[0].ID
+		}
+
+		AddedTracks = append(AddedTracks, AddedTrack{
+			Path:     mvOutPath,
+			Artist:   mvArtistName,
+			ArtistID: mvArtistId,
+			Album:    mvAlbumName,
+			Song:     mvName,
+		})
 		return nil
 	}
 
@@ -2077,9 +2124,11 @@ func mvDownloader(adamID string, saveDir string, token string, storefront string
 	videom3u8url, _ := extractVideo(mvm3u8url)
 	videokeyAndUrls, _ := runv3.Run(adamID, videom3u8url, token, mediaUserToken, true, "")
 	_ = runv3.ExtMvData(videokeyAndUrls, vidPath)
+	defer os.Remove(vidPath)
 	audiom3u8url, _ := extractMvAudio(mvm3u8url)
 	audiokeyAndUrls, _ := runv3.Run(adamID, audiom3u8url, token, mediaUserToken, true, "")
 	_ = runv3.ExtMvData(audiokeyAndUrls, audPath)
+	defer os.Remove(audPath)
 
 	tags := []string{
 		"tool=",
@@ -2144,6 +2193,7 @@ func mvDownloader(adamID string, saveDir string, token string, storefront string
 			tags = append(tags, fmt.Sprintf("cover=%s", covPath))
 		}
 	}
+	defer os.Remove(covPath)
 
 	tagsString := strings.Join(tags, ":")
 	muxCmd := exec.Command("MP4Box", "-itags", tagsString, "-quiet", "-add", vidPath, "-add", audPath, "-keep-utc", "-new", mvOutPath)
@@ -2153,9 +2203,23 @@ func mvDownloader(adamID string, saveDir string, token string, storefront string
 		return err
 	}
 	fmt.Printf("\rMV Remuxed.   \n")
-	defer os.Remove(vidPath)
-	defer os.Remove(audPath)
-	defer os.Remove(covPath)
+
+	// Append to AddedTracks
+	mvArtistName := MVInfo.Data[0].Attributes.ArtistName
+	mvAlbumName := MVInfo.Data[0].Attributes.AlbumName
+	mvName := MVInfo.Data[0].Attributes.Name
+	mvArtistId := ""
+	if len(MVInfo.Data[0].Relationships.Artists.Data) > 0 {
+		mvArtistId = MVInfo.Data[0].Relationships.Artists.Data[0].ID
+	}
+
+	AddedTracks = append(AddedTracks, AddedTrack{
+		Path:     mvOutPath,
+		Artist:   mvArtistName,
+		ArtistID: mvArtistId,
+		Album:    mvAlbumName,
+		Song:     mvName,
+	})
 
 	return nil
 }
@@ -2577,35 +2641,6 @@ func ripSong(songId string, token string, storefront string, mediaUserToken stri
 	if err != nil {
 		fmt.Println("Failed to rip song:", err)
 		return err
-	}
-
-	return nil
-}
-
-// copyFile copies a file from src to dst, creating parent directories if needed
-func copyFile(src, dst string) error {
-	// Ensure destination directory exists
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return fmt.Errorf("failed to create destination directory: %v", err)
-	}
-
-	// Open source file
-	source, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("failed to open source file: %v", err)
-	}
-	defer source.Close()
-
-	// Create destination file
-	destination, err := os.Create(dst)
-	if err != nil {
-		return fmt.Errorf("failed to create destination file: %v", err)
-	}
-	defer destination.Close()
-
-	// Copy the contents
-	if _, err := io.Copy(destination, source); err != nil {
-		return fmt.Errorf("failed to copy file contents: %v", err)
 	}
 
 	return nil
